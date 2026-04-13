@@ -1,175 +1,396 @@
 import numpy as np
 import matplotlib.pyplot as plt
+import cv2
 import utils
+from collections import Counter
+from typing import List
+import os
 
-# Загрузка набора данных
-print("Загрузка данных...")
-images, labels = utils.load_dataset()
-print(f"Загружено {len(images)} изображений")
+# ============ НАСТРОЙКИ ============
+NUM_OF_IMAGES = 4
+KERNEL_SIZE = 4
+OFFSET = 3
 
-# Инициализация весов и смещений случайными значениями
-weights_input_to_hidden = np.random.uniform(-0.5, 0.5, (20, 784))  # веса от входного к скрытому слою
-weights_hidden_to_output = np.random.uniform(-0.5, 0.5, (10, 20))  # веса от скрытого к выходному слою
-bias_input_to_hidden = np.zeros((20, 1))   # смещения для скрытого слоя
-bias_hidden_to_output = np.zeros((10, 1))  # смещения для выходного слоя
+# ============ ФУНКЦИИ ДЛЯ ОБРАБОТКИ КАПЧ ============
 
-# Параметры обучения
-epochs = 3          # количество эпох
-e_loss = 0          # накопленная ошибка за эпоху
-e_correct = 0       # количество правильных предсказаний за эпоху
-learning_rate = 0.01  # скорость обучения
+def remove_line1(img: np.ndarray) -> np.ndarray:
+    new_img = img.copy()
+    for row in range(0, new_img.shape[0] - KERNEL_SIZE, OFFSET):
+        for col in range(0, new_img.shape[1] - KERNEL_SIZE, OFFSET):
+            conv = new_img[row:row + KERNEL_SIZE, col:col + KERNEL_SIZE]
+            colors = np.zeros((KERNEL_SIZE, KERNEL_SIZE))
+            for i in range(KERNEL_SIZE):
+                for j in range(KERNEL_SIZE):
+                    colors[i, j] = int(conv[i, j, 0]) + int(conv[i, j, 1]) + int(conv[i, j, 2])
+            colors = list(Counter(colors.reshape(KERNEL_SIZE ** 2)))
+            if len(colors) == 2 and (colors[0] == 765 or colors[1] == 765):
+                new_img[row:row + KERNEL_SIZE, col:col + KERNEL_SIZE] = [255, 255, 255]
+    return new_img
 
-print("Начало обучения...")
-print("-" * 50)
 
-# Основной цикл обучения по эпохам
-for epoch in range(epochs):
-    print(f"Эпоха №{epoch + 1}")
+def remove_line2(number_image: np.ndarray) -> np.ndarray:
+    new_img = cv2.cvtColor(number_image, cv2.COLOR_BGR2HSV)
+    colors = np.zeros((new_img.shape[0], new_img.shape[1]), dtype=int)
+    for row in range(new_img.shape[0]):
+        for col in range(new_img.shape[1]):
+            colors[row, col] = int(new_img[row, col, 0]) + int(new_img[row, col, 1]) + int(new_img[row, col, 2])
+    colors = Counter(colors.reshape(colors.shape[0] * colors.shape[1]))
+    colors.pop(255)
+    if len(colors) > 0:
+        colors.pop(max(colors, key=colors.get))
+    for row in range(new_img.shape[0]):
+        for col in range(new_img.shape[1]):
+            for color in colors:
+                if int(new_img[row, col, 0]) + int(new_img[row, col, 1]) + int(new_img[row, col, 2]) == color:
+                    new_img[row, col] = [0, 0, 255]
+    return cv2.cvtColor(new_img, cv2.COLOR_HSV2BGR)
+
+
+def to_binary(img: np.ndarray) -> np.ndarray:
+    if len(img.shape) == 3:
+        new_img = np.zeros((img.shape[0], img.shape[1]), dtype=np.uint8)
+        for row in range(img.shape[0]):
+            for col in range(img.shape[1]):
+                if (img[row, col] == [255, 255, 255]).all():
+                    new_img[row, col] = 0
+                else:
+                    new_img[row, col] = 1
+        return new_img
+    else:
+        return (img > 127).astype(np.uint8)
+
+
+def get_numbers(img: np.ndarray) -> List[np.ndarray]:
+    w = img.shape[1] // NUM_OF_IMAGES
+    numbers = []
+    for i in range(NUM_OF_IMAGES):
+        numbers.append(img[:, i * w: i * w + w])
+    return numbers
+
+
+def preprocess_captcha(img: np.ndarray, debug: bool = False) -> List[np.ndarray]:
+    img = remove_line1(img)
+    numbers = get_numbers(img)
+    processed_numbers = []
     
-    # Обучение на каждом примере
-    for image, label in zip(images, labels):
-        # Преобразование входных данных в вектор-столбец
-        image = np.reshape(image, (-1, 1))
-        label = np.reshape(label, (-1, 1))
-        
-        # === Прямое распространение (Forward propagation) ===
-        
-        # Скрытый слой
-        hidden_raw = bias_input_to_hidden + weights_input_to_hidden @ image  # линейная комбинация
-        hidden = 1 / (1 + np.exp(-hidden_raw))  # сигмоидная функция активации
-        
-        # Выходной слой
-        output_raw = bias_hidden_to_output + weights_hidden_to_output @ hidden  # линейная комбинация
-        output = 1 / (1 + np.exp(-output_raw))  # сигмоидная функция активации
-        
-        # === Расчет ошибки ===
-        # Накопление среднеквадратичной ошибки для эпохи
-        e_loss += 1 / len(output) * np.sum((output - label) ** 2, axis=0)
-        # Подсчет правильных предсказаний (сравнение индексов максимальных значений)
-        e_correct += int(np.argmax(output) == np.argmax(label))
-        
-        # === Обратное распространение (Backpropagation) ===
-        
-        # Выходной слой: градиент ошибки
-        delta_output = output - label
-        # Обновление весов и смещений выходного слоя
-        weights_hidden_to_output += -learning_rate * delta_output @ np.transpose(hidden)
-        bias_hidden_to_output += -learning_rate * delta_output
-        
-        # Скрытый слой: распространение ошибки назад
-        delta_hidden = np.transpose(weights_hidden_to_output) @ delta_output * (hidden * (1 - hidden))
-        # Обновление весов и смещений скрытого слоя
-        weights_input_to_hidden += -learning_rate * delta_hidden @ np.transpose(image)
-        bias_input_to_hidden += -learning_rate * delta_hidden
-        
-        # Конец обработки одного примера
+    for i, number in enumerate(numbers):
+        _, number = cv2.threshold(number, 127, 255, cv2.THRESH_BINARY)
+        number = remove_line2(number)
+        number = to_binary(number)
+        number = cv2.resize(number.astype(np.float32), (28, 28))
+        processed_numbers.append(number)
     
-    # Вывод статистики после завершения эпохи
-    print(f"  Ошибка: {round((e_loss[0] / images.shape[0]) * 100, 3)}%")
-    print(f"  Точность: {round((e_correct / images.shape[0]) * 100, 3)}%")
-    print("-" * 50)
-    
-    # Сброс накопителей для следующей эпохи
-    e_loss = 0
-    e_correct = 0
+    return processed_numbers
 
-print("Обучение завершено!")
-print("\n" + "=" * 50)
-print("ИНТЕРАКТИВНЫЙ РЕЖИМ ПРОСМОТРА")
-print("=" * 50)
-print("Управление:")
-print("  → или Right - следующее изображение")
-print("  ← или Left - предыдущее изображение")
-print("  Esc - закрыть окно")
-print("=" * 50)
 
-# Функция предсказания для одного изображения
-def predict(image):
-    """
-    Предсказывает цифру на изображении
-    
-    Параметры:
-    image - входное изображение (784 пикселя)
-    
-    Возвращает:
-    predicted_digit - предсказанная цифра (0-9)
-    output - выходные значения нейросети
-    """
-    image = np.reshape(image, (-1, 1))
-    hidden_raw = bias_input_to_hidden + weights_input_to_hidden @ image
-    hidden = 1 / (1 + np.exp(-hidden_raw))
-    output_raw = bias_hidden_to_output + weights_hidden_to_output @ hidden
-    output = 1 / (1 + np.exp(-output_raw))
-    return output.argmax(), output
+# ============ НЕЙРОСЕТЬ ============
 
-# Интерактивный просмотр изображений
-def interactive_view(images_list, start_index=0):
-    """
-    Создает интерактивное окно для просмотра изображений
+class NeuralNetwork:
+    def __init__(self, input_size=784, hidden_size=20, output_size=10):
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.output_size = output_size
+        self.weights_input_to_hidden = np.random.uniform(-0.5, 0.5, (hidden_size, input_size))
+        self.weights_hidden_to_output = np.random.uniform(-0.5, 0.5, (output_size, hidden_size))
+        self.bias_input_to_hidden = np.zeros((hidden_size, 1))
+        self.bias_hidden_to_output = np.zeros((output_size, 1))
     
-    Параметры:
-    images_list - список изображений для просмотра
-    start_index - начальный индекс изображения
-    """
-    current_index = start_index
+    def sigmoid(self, x):
+        return 1 / (1 + np.exp(-np.clip(x, -500, 500)))
     
-    # Создание фигуры для отображения
+    def forward(self, X):
+        X = np.reshape(X, (-1, 1))
+        hidden_raw = self.bias_input_to_hidden + self.weights_input_to_hidden @ X
+        hidden = self.sigmoid(hidden_raw)
+        output_raw = self.bias_hidden_to_output + self.weights_hidden_to_output @ hidden
+        output = self.sigmoid(output_raw)
+        return output
+    
+    def predict(self, X):
+        output = self.forward(X)
+        return np.argmax(output)
+    
+    def predict_with_confidence(self, X):
+        """Возвращает предсказание и уверенность"""
+        output = self.forward(X)
+        predicted = np.argmax(output)
+        confidence = np.max(output) * 100
+        return predicted, confidence
+    
+    def train(self, images, labels, epochs=3, learning_rate=0.01):
+        n_samples = len(images)
+        for epoch in range(epochs):
+            e_loss = 0
+            e_correct = 0
+            for i in range(n_samples):
+                image = images[i].flatten().reshape(-1, 1)
+                label = labels[i].reshape(-1, 1)
+                
+                hidden_raw = self.bias_input_to_hidden + self.weights_input_to_hidden @ image
+                hidden = self.sigmoid(hidden_raw)
+                output_raw = self.bias_hidden_to_output + self.weights_hidden_to_output @ hidden
+                output = self.sigmoid(output_raw)
+                
+                e_loss += 1 / len(output) * np.sum((output - label) ** 2, axis=0)
+                e_correct += int(np.argmax(output) == np.argmax(label))
+                
+                delta_output = output - label
+                self.weights_hidden_to_output += -learning_rate * delta_output @ hidden.T
+                self.bias_hidden_to_output += -learning_rate * delta_output
+                
+                delta_hidden = self.weights_hidden_to_output.T @ delta_output * (hidden * (1 - hidden))
+                self.weights_input_to_hidden += -learning_rate * delta_hidden @ image.T
+                self.bias_input_to_hidden += -learning_rate * delta_hidden
+            
+            loss_percent = (e_loss[0] / n_samples) * 100
+            accuracy = (e_correct / n_samples) * 100
+            print(f"Эпоха {epoch + 1}/{epochs} | Ошибка: {loss_percent:.3f}% | Точность: {accuracy:.2f}%")
+
+
+# ============ ФУНКЦИИ ДЛЯ РАСПОЗНАВАНИЯ ============
+
+def solve_captcha(nn: NeuralNetwork, captcha_path: str, visualize: bool = False) -> str:
+    """Распознает капчу"""
+    if isinstance(captcha_path, str):
+        img = cv2.imread(captcha_path)
+    else:
+        img = captcha_path
+    
+    if img is None:
+        return "Ошибка загрузки"
+    
+    numbers = preprocess_captcha(img)
+    
+    if visualize:
+        fig, axes = plt.subplots(2, 4, figsize=(12, 6))
+        fig.suptitle("Распознавание капчи", fontsize=14)
+    
+    answer = ""
+    for i, number in enumerate(numbers):
+        digit, conf = nn.predict_with_confidence(number.flatten())
+        answer += str(digit)
+        
+        if visualize:
+            axes[0, i].imshow(number, cmap='gray')
+            axes[0, i].set_title(f"Цифра {i+1}")
+            axes[0, i].axis('off')
+            axes[1, i].text(0.5, 0.5, f"{digit}\n({conf:.0f}%)", 
+                           ha='center', va='center', fontsize=14)
+            axes[1, i].axis('off')
+    
+    if visualize:
+        plt.tight_layout()
+        plt.show()
+    
+    return answer
+
+
+def diagnose_captcha(nn: NeuralNetwork, captcha_path: str):
+    """Диагностика распознавания капчи"""
+    img = cv2.imread(captcha_path)
+    if img is None:
+        print("Ошибка загрузки")
+        return
+    
+    print(f"\n=== ДИАГНОСТИКА: {os.path.basename(captcha_path)} ===\n")
+    
+    numbers = preprocess_captcha(img)
+    result = ""
+    
+    for i, number in enumerate(numbers):
+        predicted, confidence = nn.predict_with_confidence(number.flatten())
+        result += str(predicted)
+        
+        if confidence < 50:
+            status = "⚠️ НИЗКАЯ"
+        elif confidence < 80:
+            status = "⚠️ СРЕДНЯЯ"
+        else:
+            status = "✓ ХОРОШАЯ"
+        
+        print(f"Цифра {i+1}: {predicted} (уверенность: {confidence:.1f}%) {status}")
+        
+        plt.figure(figsize=(3, 3))
+        plt.imshow(number, cmap='gray')
+        plt.title(f"Цифра {i+1} -> {predicted} ({confidence:.0f}%)")
+        plt.axis('off')
+        plt.show()
+    
+    print(f"\nРЕЗУЛЬТАТ: {result}")
+
+
+def batch_test_captcha(nn: NeuralNetwork, captcha_folder="test_images"):
+    """Массовое тестирование"""
+    if not os.path.exists(captcha_folder):
+        print(f"Папка {captcha_folder} не найдена")
+        return
+    
+    captcha_files = [f for f in os.listdir(captcha_folder) 
+                     if f.endswith(('.png', '.jpg', '.jpeg'))]
+    
+    if not captcha_files:
+        print("Нет изображений")
+        return
+    
+    print("\n" + "="*50)
+    print("ТЕСТИРОВАНИЕ КАПЧ")
+    print("="*50)
+    
+    for img_name in captcha_files:
+        img_path = os.path.join(captcha_folder, img_name)
+        result = solve_captcha(nn, img_path, visualize=False)
+        print(f"{img_name}: {result}")
+
+
+# ============ ИНТЕРАКТИВНЫЙ ПРОСМОТР ============
+
+def interactive_digits_viewer(nn: NeuralNetwork, images, labels):
+    """Просмотр цифр MNIST"""
+    current_index = 0
+    total = len(images)
+    
     fig, ax = plt.subplots(figsize=(8, 8))
     plt.subplots_adjust(bottom=0.15)
     
-    # Функция обновления отображения
-    def update_display():
-        """Обновляет текущее изображение и предсказание"""
+    def update():
         ax.clear()
-        test_image = images_list[current_index]
-        predicted_digit, output = predict(test_image)
+        img = images[current_index]
+        true_label = np.argmax(labels[current_index])
+        predicted, conf = nn.predict_with_confidence(img.flatten())
         
-        # Получение вероятностей для каждого класса
-        confidence = np.max(output) * 100  # уверенность в процентах
+        color = 'green' if predicted == true_label else 'red'
+        status = "✓" if predicted == true_label else "✗"
         
-        # Отображение изображения
-        ax.imshow(test_image.reshape(28, 28), cmap="Greys")
-        
-        # Создание заголовка с информацией
-        title = (f"Изображение {current_index + 1}/{len(images_list)}\n"
-                f"Нейросеть предполагает: {predicted_digit}\n"
-                f"Уверенность: {confidence:.1f}%")
-        
-        ax.set_title(title, fontsize=12, fontweight='bold')
+        ax.imshow(img.reshape(28, 28), cmap="Greys")
+        ax.set_title(f"{current_index+1}/{total} | Нейросеть: {predicted} | Ответ: {true_label} | {status} | {conf:.0f}%", 
+                    color=color, fontsize=12)
         ax.axis('off')
-        
-        # Добавление текста с подсказками по управлению внизу
-        fig.text(0.5, 0.02, '← Предыдущее | Следующее → | Esc - выход', 
-                ha='center', fontsize=10, style='italic')
-        
         fig.canvas.draw()
     
-    # Обработчик нажатий клавиш
     def on_key(event):
         nonlocal current_index
-        if event.key == 'right' or event.key == '→':
-            current_index = (current_index + 1) % len(images_list)
-            update_display()
-        elif event.key == 'left' or event.key == '←':
-            current_index = (current_index - 1) % len(images_list)
-            update_display()
+        if event.key in ['right', '→']:
+            current_index = (current_index + 1) % total
+            update()
+        elif event.key in ['left', '←']:
+            current_index = (current_index - 1) % total
+            update()
         elif event.key == 'escape':
             plt.close()
-            print("\nПрограмма завершена. Спасибо за использование!")
     
-    # Подключение обработчика событий клавиатуры
     fig.canvas.mpl_connect('key_press_event', on_key)
-    
-    # Отображение первого изображения
-    update_display()
-    
-    # Показ окна
+    update()
     plt.show()
 
-# Запуск интерактивного просмотра
-try:
-    interactive_view(images)
-except KeyboardInterrupt:
-    print("\nПрограмма прервана пользователем")
-except Exception as e:
-    print(f"\nПроизошла ошибка: {e}")
+
+def interactive_captcha_viewer(nn: NeuralNetwork, folder="test_images"):
+    """Просмотр капч"""
+    if not os.path.exists(folder):
+        print(f"Папка {folder} не найдена")
+        return
+    
+    files = [f for f in os.listdir(folder) if f.endswith(('.png', '.jpg', '.jpeg'))]
+    if not files:
+        print("Нет изображений")
+        return
+    
+    files.sort()
+    current = 0
+    total = len(files)
+    
+    fig, ax = plt.subplots(figsize=(12, 8))
+    plt.subplots_adjust(bottom=0.15)
+    
+    def update():
+        ax.clear()
+        img_path = os.path.join(folder, files[current])
+        img = cv2.imread(img_path)
+        
+        if img is None:
+            ax.text(0.5, 0.5, "Ошибка", ha='center', va='center')
+            return
+        
+        numbers = preprocess_captcha(img)
+        result = ""
+        confs = []
+        
+        for num in numbers:
+            pred, conf = nn.predict_with_confidence(num.flatten())
+            result += str(pred)
+            confs.append(conf)
+        
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        ax.imshow(img_rgb)
+        ax.set_title(f"{current+1}/{total} | Результат: {result} | Уверенность: {np.mean(confs):.0f}%", fontsize=12)
+        ax.axis('off')
+        
+        fig.text(0.5, 0.02, '← → - листать | Esc - выход', ha='center', fontsize=10)
+        fig.canvas.draw()
+    
+    def on_key(event):
+        nonlocal current
+        if event.key in ['right', '→']:
+            current = (current + 1) % total
+            update()
+        elif event.key in ['left', '←']:
+            current = (current - 1) % total
+            update()
+        elif event.key == 'escape':
+            plt.close()
+    
+    fig.canvas.mpl_connect('key_press_event', on_key)
+    update()
+    plt.show()
+
+
+# ============ ОСНОВНАЯ ПРОГРАММА ============
+
+def main():
+    print("\n" + "="*50)
+    print("ЗАГРУЗКА И ОБУЧЕНИЕ НЕЙРОСЕТИ")
+    print("="*50)
+    
+    images, labels = utils.load_dataset()
+    
+    nn = NeuralNetwork(input_size=784, hidden_size=20, output_size=10)
+    nn.train(images, labels, epochs=3, learning_rate=0.01)
+    
+    while True:
+        print("\n" + "="*50)
+        print("ГЛАВНОЕ МЕНЮ")
+        print("="*50)
+        print("1 - Просмотр цифр MNIST (листать стрелками)")
+        print("2 - Просмотр капч из test_images (листать стрелками)")
+        print("3 - Быстрый тест всех капч (консоль)")
+        print("4 - Диагностика одной капчи")
+        print("5 - Выйти")
+        print("="*50)
+        
+        choice = input("Ваш выбор: ")
+        
+        if choice == '1':
+            interactive_digits_viewer(nn, images, labels)
+        
+        elif choice == '2':
+            interactive_captcha_viewer(nn, "test_images")
+        
+        elif choice == '3':
+            batch_test_captcha(nn, "test_images")
+        
+        elif choice == '4':
+            path = input("Путь к капче: ")
+            if os.path.exists(path):
+                diagnose_captcha(nn, path)
+            else:
+                print("Файл не найден!")
+        
+        elif choice == '5':
+            print("До свидания!")
+            break
+        
+        else:
+            print("Неверный выбор!")
+
+
+if __name__ == "__main__":
+    main()
